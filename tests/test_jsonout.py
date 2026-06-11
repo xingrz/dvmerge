@@ -103,6 +103,18 @@ class TestJsonOut(unittest.TestCase):
         self.assertEqual(a2["damage"], [])               # A-2 is clean
         self.assertEqual(json.loads(json.dumps(d)), d)
 
+    def test_span_runs_are_tight_not_bridged(self):
+        # damaged frames at 10, 30, 50 — within one bridged re-capture span, but >0.5 s apart, so the
+        # map should see THREE tight sub-runs (not one filled block)
+        rows = []
+        for i in range(70):
+            dmg = i in (10, 30, 50)
+            rows.append(row(i, "00:00:%02d:%02d" % (i // 25, i % 25), "2010-01-01 08:00:00",
+                            "P " if dmg else "  ", 5 if dmg else 0))
+        d = self._analysis(rows)
+        self.assertEqual(len(d["spans"]), 1)            # one re-capture span (bridged)
+        self.assertEqual(len(d["spans"][0]["runs"]), 3)  # but three precise runs for the map
+
     def test_missing_span_has_empty_coverage(self):
         # frames 0..4 then jump to 10..14 -> frames 5..9 missing in every capture
         rows = [row(i, "00:00:00:%02d" % i, "2010-01-01 08:00:00", "  ", 0) for i in range(5)]

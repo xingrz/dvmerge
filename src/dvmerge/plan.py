@@ -49,7 +49,7 @@ class Span:
     """A contiguous run of imperfect tape worth re-capturing."""
 
     __slots__ = ("tf0", "tf1", "tc0", "tc1", "rdt0", "rdt1",
-                 "dmg", "miss", "bmax", "cover")
+                 "dmg", "miss", "bmax", "cover", "runs")
 
     def __init__(self, tf0, tc0, rdt0):
         self.tf0 = self.tf1 = tf0
@@ -59,6 +59,17 @@ class Span:
         self.miss = 0         # frames missing from every capture
         self.bmax = 0         # worst single-frame block-error count
         self.cover = set()    # input indices that have *some* frame in this span
+        self.runs = []        # tight damaged sub-runs [{tf0,tf1,tc0,tc1}] — the ACTUAL damage
+        #                       inside the span (the span bridges short clean gaps for the cue, but
+        #                       these are the real scattered runs, for drawing on the map)
+
+    def add_run(self, tf0, tf1, tc0, tc1, tight):
+        """Record an imperfect atom as a tight sub-run, coalescing only across gaps <= ``tight``."""
+        if self.runs and tf0 - self.runs[-1]["tf1"] <= tight:
+            self.runs[-1]["tf1"] = tf1
+            self.runs[-1]["tc1"] = tc1
+        else:
+            self.runs.append({"tf0": tf0, "tf1": tf1, "tc0": tc0, "tc1": tc1})
 
     @property
     def length(self):
@@ -125,6 +136,7 @@ def build(frames, files, fps, bridge_s=3.0, min_s=0.5):
             atoms.append((f.tf, f.tf, 1, 0, f.berr, f.cover, f.rdt, f.tc, f.rdt, f.tc))
         prev = f
 
+    tight = max(1, int(0.5 * fps))   # tight coalescing for the actual sub-runs (vs the bridged span)
     spans = []
     for tf0, tf1, dmg, miss, bmax, cover, rdt0, tc0, rdt1, tc1 in atoms:
         if spans and tf0 - spans[-1].tf1 - 1 <= bridge:
@@ -137,6 +149,7 @@ def build(frames, files, fps, bridge_s=3.0, min_s=0.5):
         s.miss += miss
         s.bmax = max(s.bmax, bmax)
         s.cover |= set(cover)
+        s.add_run(tf0, tf1, tc0, tc1, tight)
 
     p = Plan()
     p.fps = fps

@@ -37,6 +37,8 @@ def _span(s):
         "miss": s.miss,          # frames missing from every capture
         "bmax": s.bmax,          # worst single-frame block-error count
         "cover": sorted(s.cover),
+        # the actual scattered damaged sub-runs inside the (gap-bridged) span, for drawing on the map
+        "runs": [{"tc0": r["tc0"], "tc1": r["tc1"]} for r in s.runs],
     }
 
 
