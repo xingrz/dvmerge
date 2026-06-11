@@ -27,7 +27,12 @@ copy was found), and `Status` (one char per input: `' '` clean / `'P'` damaged /
   ([plan.py](src/dvmerge/plan.py)): coalesce imperfect frames, bridge short clean gaps, recover
   *missing* frames as gaps in the `tc` sequence (they have no CSV row), and compute per-span
   coverage from `Status`.
-- **Rendering** ([report.py](src/dvmerge/report.py)) in hdvmerge's report shape.
+- **Rendering** ([report.py](src/dvmerge/report.py)) in hdvmerge's report shape, plus a structured
+  **JSON dump** ([jsonout.py](src/dvmerge/jsonout.py), `--json`): a faithful serialization of the
+  `Plan` (tallies, re-capture spans with coverage, per-capture spans) that a GUI/tool consumes
+  instead of scraping Markdown — NOT a normalised external schema (the consumer normalises). Normal
+  CLI use never reads it, so [tests/test_jsonout.py](tests/test_jsonout.py) pins its shape to the
+  model; keep them in lock-step when you touch `plan.py` / `parse.py`.
 - **Caching** the merge log by input fingerprint (`.dvmerge/merge-<sig>.csv`) so re-reads and
   `--bridge` tweaks don't re-merge; any input change re-runs dvrescue.
 

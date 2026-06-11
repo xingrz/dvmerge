@@ -77,6 +77,7 @@ unreadable spots → add `-o` to keep the merged file.
 | `--fps N` | Tape frame rate (default `25` for PAL; `29.97` for NTSC). |
 | `--bridge SEC` | Merge damaged patches less than `SEC` apart into one re-capture target (default `3`). |
 | `--min SEC` | Omit re-capture regions shorter than `SEC` (default `0.5`). |
+| `--json` | Emit the analysis as one JSON object on stdout (a faithful dump of the model — tallies, re-capture spans with coverage, per-capture spans) instead of the Markdown report, for a tool to consume; all human status goes to stderr. |
 | `--no-cache` | Don't read or write the merge-log cache. |
 | `--cache-dir DIR` | Store the merge-log cache in `DIR`. |
 | `--dvrescue PATH` | Path to the dvrescue binary (or set `$DVRESCUE`). |

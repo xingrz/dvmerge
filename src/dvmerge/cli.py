@@ -12,13 +12,14 @@ its log is parsed.
 
 import argparse
 import hashlib
+import json
 import os
 import shutil
 import sys
 import tempfile
 
 from . import __version__, DEFAULT_FPS
-from . import dvrescue, parse, plan, report
+from . import dvrescue, parse, plan, report, jsonout
 
 EXTS = (".dv", ".dif")
 
@@ -117,6 +118,10 @@ def main(argv=None):
                     help="merge damaged patches less than SEC apart into one re-capture target (default 3)")
     ap.add_argument("--min", type=float, default=0.5, metavar="SEC",
                     help="omit re-capture regions shorter than SEC (default 0.5)")
+    ap.add_argument("--json", action="store_true",
+                    help="emit the analysis as one JSON object on stdout instead of the Markdown "
+                         "report (a faithful dump of the model for tools to consume); all human "
+                         "status goes to stderr")
     ap.add_argument("--no-cache", action="store_true", help="do not read or write the merge-log cache")
     ap.add_argument("--cache-dir", metavar="DIR", help="store the merge-log cache in DIR")
     ap.add_argument("--dvrescue", metavar="PATH", help="path to the dvrescue binary")
@@ -141,11 +146,15 @@ def main(argv=None):
             return 2
         p = plan.build(frames, files, args.fps, bridge_s=args.bridge, min_s=args.min)
         md = report.render(p)
+        out_json = json.dumps(jsonout.analysis(p), sort_keys=True) if args.json else None
     finally:
         cleanup()
 
-    print()
-    print(md)
+    if args.json:
+        print(out_json)             # stdout: exactly one JSON object; human chatter is on stderr
+    else:
+        print()
+        print(md)
 
     if args.output:
         rp = args.output + ".report.md"
