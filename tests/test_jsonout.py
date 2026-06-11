@@ -111,7 +111,7 @@ class TestJsonOut(unittest.TestCase):
             dmg = i in (10, 30, 50)
             rows.append(row(i, "00:00:%02d:%02d" % (i // 25, i % 25), "2010-01-01 08:00:00",
                             "P " if dmg else "  ", 5 if dmg else 0))
-        d = self._analysis(rows)
+        d = self._analysis(rows, bridge=3.0)             # bridge the clean gaps into one span
         self.assertEqual(len(d["spans"]), 1)            # one re-capture span (bridged)
         self.assertEqual(len(d["spans"][0]["runs"]), 3)  # but three precise runs for the map
 
