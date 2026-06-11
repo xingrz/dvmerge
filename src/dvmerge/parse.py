@@ -38,11 +38,12 @@ def frames_to_tc(n, fps):
 
 
 class Frame:
-    """One merged tape frame. ``cover`` is the set of input indices that hold it (non-``M``)."""
+    """One merged tape frame. ``cover`` is the set of input indices that hold it (non-``M``);
+    ``damaged`` is the subset that hold it but *damaged* (Status ``'P'``)."""
 
-    __slots__ = ("tf", "tc", "rdt", "berr", "cover", "abst")
+    __slots__ = ("tf", "tc", "rdt", "berr", "cover", "abst", "damaged")
 
-    def __init__(self, tf, tc, rdt, berr, cover, abst):
+    def __init__(self, tf, tc, rdt, berr, cover, abst, damaged=frozenset()):
         self.tf = tf            # tape frame number (from tc), used for ordering and labels
         self.tc = tc            # raw tape timecode string, for display
         self.rdt = rdt          # recording date-time string, for display
@@ -51,6 +52,7 @@ class Frame:
         self.abst = abst        # absolute track number on tape (physical position), or None.
         #                         The *physical* coordinate: unlike tc it can't jump at a
         #                         camera stop/start, so it is the arbiter for what is truly missing.
+        self.damaged = damaged  # frozenset of input indices that have this frame but DAMAGED ('P')
 
 
 def parse(csv_path, fps, nfiles=None):
@@ -65,8 +67,10 @@ def parse(csv_path, fps, nfiles=None):
             st = r.get("Status") or ""
             seen_n = max(seen_n, len(st))
             cover = frozenset(i for i, c in enumerate(st) if c != "M")
+            damaged = frozenset(i for i, c in enumerate(st) if c == "P")
             ab = r.get("abst") or ""
             frames.append(Frame(tc_to_frames(tc, fps), tc, r.get("rdt", "") or "",
-                                int(r.get("BlockErrors") or 0), cover, int(ab) if ab else None))
+                                int(r.get("BlockErrors") or 0), cover, int(ab) if ab else None,
+                                damaged))
     frames.sort(key=lambda f: f.tf)
     return frames, (nfiles or seen_n)

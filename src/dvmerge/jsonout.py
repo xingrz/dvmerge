@@ -40,11 +40,14 @@ def _span(s):
     }
 
 
-def _source(src, tag):
-    if src is None:
-        return {"tag": tag, "aligned": False}
-    tc0, tc1, rdt0, rdt1 = src
-    return {"tag": tag, "aligned": True, "tc0": tc0, "tc1": tc1, "rdt0": rdt0, "rdt1": rdt1}
+def _source(src, tag, damage):
+    """Per-capture: its coverage span (or ``aligned: False``) plus ``damage`` — the tape-TC runs
+    where this capture is itself damaged, for showing on its lane."""
+    base = {"tag": tag, "aligned": src is not None, "damage": damage or []}
+    if src is not None:
+        tc0, tc1, rdt0, rdt1 = src
+        base.update({"tc0": tc0, "tc1": tc1, "rdt0": rdt0, "rdt1": rdt1})
+    return base
 
 
 def analysis(plan):
@@ -55,6 +58,7 @@ def analysis(plan):
     ``complete`` is dvmerge's own "nothing to re-capture" verdict — every tape frame in the merged
     output has a clean copy, so no span survives."""
     tags = [_tag(f) for f in plan.files]
+    sd = getattr(plan, "source_damage", None) or []
     return {
         "schema": SCHEMA,
         "version": __version__,
@@ -71,6 +75,7 @@ def analysis(plan):
         "complete": not plan.spans,
         "files": tags,
         "spans": [_span(s) for s in plan.spans],
-        "sources": [_source(plan.sources[i] if i < len(plan.sources) else None, tags[i])
+        "sources": [_source(plan.sources[i] if i < len(plan.sources) else None, tags[i],
+                            sd[i] if i < len(sd) else [])
                     for i in range(len(plan.files))],
     }

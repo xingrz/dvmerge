@@ -73,11 +73,36 @@ class Span:
 
 class Plan:
     __slots__ = ("fps", "files", "rdt0", "rdt1", "tc0", "tc1", "total_frames",
-                 "clean", "dmg", "miss", "spans", "lost_frames", "sources")
+                 "clean", "dmg", "miss", "spans", "lost_frames", "sources", "source_damage")
 
     def __init__(self):
         self.spans = []
         self.sources = []   # per input index: (tc0, tc1, rdt0, rdt1) it covers, or None
+        self.source_damage = []  # per input index: list of {tc0, tc1, frames} damaged runs ('P')
+
+
+def source_damage(frames, nfiles, fps, bridge_s=0.5):
+    """Per input capture, the tape-TC runs where *that capture itself* is damaged (Status ``'P'``),
+    independent of whether the merge repaired it from another copy — so a consumer can show a
+    capture's own damage on its lane. Consecutive damaged frames within ``bridge_s`` are coalesced
+    into one run."""
+    bridge = max(1, int(bridge_s * fps))
+    out = [[] for _ in range(nfiles)]
+    for f in frames:
+        for i in f.damaged:
+            if i >= nfiles:
+                continue
+            runs = out[i]
+            if runs and f.tf - runs[-1]["_tf1"] <= bridge:
+                runs[-1]["tc1"] = f.tc
+                runs[-1]["_tf1"] = f.tf
+                runs[-1]["frames"] += 1
+            else:
+                runs.append({"tc0": f.tc, "tc1": f.tc, "_tf1": f.tf, "frames": 1})
+    for runs in out:
+        for run in runs:
+            del run["_tf1"]
+    return out
 
 
 def build(frames, files, fps, bridge_s=3.0, min_s=0.5):
@@ -136,4 +161,5 @@ def build(frames, files, fps, bridge_s=3.0, min_s=0.5):
                 else:
                     src[i][1], src[i][3] = f.tc, f.rdt
     p.sources = [tuple(x) if x else None for x in src]
+    p.source_damage = source_damage(frames, len(files), fps)
     return p

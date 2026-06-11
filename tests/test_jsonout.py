@@ -87,6 +87,22 @@ class TestJsonOut(unittest.TestCase):
         self.assertTrue(s["tc0"])                        # cue point on the deck
         self.assertTrue(s["rdt0"])                       # wall-clock cross-check
 
+    def test_source_carries_its_own_damage_runs(self):
+        # frames 10..13 damaged in file 0 (status 'P '); file 1 clean throughout
+        rows = []
+        for i in range(30):
+            st = "P " if 10 <= i <= 13 else "  "
+            rows.append(row(i, "00:00:%02d:%02d" % (i // 25, i % 25), "2010-01-01 08:00:00",
+                            st, 7 if 10 <= i <= 13 else 0))
+        d = self._analysis(rows)
+        a1 = next(s for s in d["sources"] if s["tag"] == "A-1")
+        a2 = next(s for s in d["sources"] if s["tag"] == "A-2")
+        self.assertTrue(a1["damage"], "A-1 should list its own damaged run")
+        self.assertEqual(a1["damage"][0]["frames"], 4)
+        self.assertTrue(a1["damage"][0]["tc0"])
+        self.assertEqual(a2["damage"], [])               # A-2 is clean
+        self.assertEqual(json.loads(json.dumps(d)), d)
+
     def test_missing_span_has_empty_coverage(self):
         # frames 0..4 then jump to 10..14 -> frames 5..9 missing in every capture
         rows = [row(i, "00:00:00:%02d" % i, "2010-01-01 08:00:00", "  ", 0) for i in range(5)]
