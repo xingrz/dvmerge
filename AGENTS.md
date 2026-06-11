@@ -35,6 +35,10 @@ copy was found), and `Status` (one char per input: `' '` clean / `'P'` damaged /
   model; keep them in lock-step when you touch `plan.py` / `parse.py`.
 - **Caching** the merge log by input fingerprint (`.dvmerge/merge-<sig>.csv`) so re-reads and
   `--bridge` tweaks don't re-merge; any input change re-runs dvrescue.
+- **A library entry** ([run.py](src/dvmerge/run.py)): `run.analyze(files, …) -> Plan` (and the lower
+  `run.merge_log`) — discover-implied → drive dvrescue (cached) → parse → plan in one call, so the
+  CLI and importing tools (the tapeflow GUI sidecar) share **one** path. Import this; don't
+  re-implement the orchestration. `cli.py` is a thin wrapper over it.
 
 ## Invariants
 

@@ -11,15 +11,12 @@ its log is parsed.
 """
 
 import argparse
-import hashlib
 import json
 import os
-import shutil
 import sys
-import tempfile
 
 from . import __version__, DEFAULT_FPS
-from . import dvrescue, parse, plan, report, jsonout
+from . import report, jsonout, run
 
 EXTS = (".dv", ".dif")
 
@@ -39,68 +36,6 @@ def _discover(inputs):
             seen.add(a)
             out.append(f)
     return out
-
-
-def _signature(files):
-    """Content fingerprint of the input set: name, size, mtime. Keys the merge-log cache."""
-    h = hashlib.sha1()
-    for f in files:
-        st = os.stat(f)
-        h.update(("%s|%d|%d\n" % (os.path.basename(f), st.st_size, st.st_mtime_ns)).encode())
-    return h.hexdigest()[:16]
-
-
-def _merge_log(files, output, args):
-    """Return a path to the CSV merge log for ``files``, running dvrescue if needed.
-
-    Returns (csv_path, cleanup) where cleanup() removes any temp artifacts. With ``output`` set we
-    always run the merge (the .dv must be produced) and move it into place; otherwise we use the
-    cache when fresh and write the merged DV to a temp file we delete.
-    """
-    sig = None if args.no_cache else _signature(files)
-    cache_dir = args.cache_dir or os.path.join(os.path.dirname(os.path.abspath(files[0])), ".dvmerge")
-    cache_csv = os.path.join(cache_dir, "merge-%s.csv" % sig) if sig else None
-
-    if not output and cache_csv and os.path.exists(cache_csv):
-        return cache_csv, (lambda: None)
-
-    # Need a real merge. Put temp artifacts on the same filesystem as the eventual home (big disk).
-    home = os.path.dirname(os.path.abspath(output)) if output else \
-        os.path.dirname(os.path.abspath(files[0]))
-    fd, tmp_dv = tempfile.mkstemp(prefix=".dvmerge-", suffix=".dv", dir=home)
-    os.close(fd)
-    os.remove(tmp_dv)  # dvrescue wants to create it fresh
-    tmp_csv = tmp_dv[:-3] + ".csv"
-
-    def cleanup():
-        for p in (tmp_dv, tmp_csv):
-            try:
-                os.remove(p)
-            except OSError:
-                pass
-
-    try:
-        dvrescue.merge(files, tmp_dv, tmp_csv, binary=args.dvrescue)
-    except Exception:
-        cleanup()
-        raise
-
-    if cache_csv:
-        os.makedirs(cache_dir, exist_ok=True)
-        shutil.copyfile(tmp_csv, cache_csv)
-
-    if output:
-        os.replace(tmp_dv, output)            # atomic, overwrites without dvrescue's prompt
-        return tmp_csv, (lambda: _rm(tmp_csv))
-    cleanup()                                  # analyse-only: keep nothing large
-    return (cache_csv or tmp_csv), (lambda: None) if cache_csv else (lambda: _rm(tmp_csv))
-
-
-def _rm(p):
-    try:
-        os.remove(p)
-    except OSError:
-        pass
 
 
 def main(argv=None):
@@ -134,21 +69,14 @@ def main(argv=None):
 
     print("captures: %s" % " + ".join(os.path.basename(f) for f in files), file=sys.stderr)
     try:
-        csv_path, cleanup = _merge_log(files, args.output, args)
+        p = run.analyze(files, output=args.output, fps=args.fps, bridge_s=args.bridge,
+                        min_s=args.min, no_cache=args.no_cache, cache_dir=args.cache_dir,
+                        dvrescue_bin=args.dvrescue)
     except RuntimeError as e:
         print("error: %s" % e, file=sys.stderr)
         return 2
-
-    try:
-        frames, _ = parse.parse(csv_path, args.fps, nfiles=len(files))
-        if not frames:
-            print("error: merge log has no frames — are these the same tape?", file=sys.stderr)
-            return 2
-        p = plan.build(frames, files, args.fps, bridge_s=args.bridge, min_s=args.min)
-        md = report.render(p)
-        out_json = json.dumps(jsonout.analysis(p), sort_keys=True) if args.json else None
-    finally:
-        cleanup()
+    md = report.render(p)
+    out_json = json.dumps(jsonout.analysis(p), sort_keys=True) if args.json else None
 
     if args.json:
         print(out_json)             # stdout: exactly one JSON object; human chatter is on stderr
