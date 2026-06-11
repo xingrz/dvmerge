@@ -1,0 +1,34 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "dvmerge"
+version = "0.1.0"
+description = "Wrap dvrescue to align, merge, and report overlapping DV tape captures — same workflow as hdvmerge"
+readme = "README.md"
+requires-python = ">=3.9"
+license = "MIT"
+authors = [{ name = "XiNGRZ" }]
+keywords = ["dv", "dvrescue", "merge", "tape", "recovery", "timecode", "pal"]
+classifiers = [
+    "Topic :: Multimedia :: Video",
+    "Topic :: System :: Recovery Tools",
+    "Programming Language :: Python :: 3",
+]
+# Pure standard library. The one external dependency is the `dvrescue` CLI (MIPoPS), which does
+# the actual alignment + frame-level merge; dvmerge wraps it and turns its CSV merge log into the
+# re-capture report. ffmpeg is not required.
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/xingrz/dvmerge"
+
+[project.scripts]
+dvmerge = "dvmerge.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/dvmerge"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src/dvmerge", "tests", "README.md", "AGENTS.md"]
