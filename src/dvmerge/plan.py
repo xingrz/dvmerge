@@ -25,26 +25,35 @@ tape actually plays.
 """
 
 
-def _carry(frames, fps):
-    """One pass over the frames (already in physical/FramePos order): attach each frame's physical
+def _carry(frames, fps, micro):
+    """One pass over the frames (already in physical/FramePos order): assign each frame its physical
     position ``pf`` and the count of frames missing immediately before it, carry tc/rec forward across
-    rows dvrescue left unlabelled, and flag the recording-session ``seam`` frames (where the
-    record-run tc steps backward). Returns a list of per-frame dicts."""
+    rows dvrescue left unlabelled, and flag the recording-session ``seam`` frames (where the record-run
+    tc steps backward). Returns a list of per-frame dicts.
+
+    Gaps smaller than ``micro`` frames are absorbed, not counted as missing: a multi-capture dvrescue
+    merge leaves periodic tiny (a few-frame) jumps in its index that are not re-capture-worthy losses
+    — counting each one would make a mostly-clean tape read as 20% missing and collapse its whole
+    re-capture list into one tape-spanning span. ``pf`` is accumulated (it skips absorbed gaps), so a
+    consumer's physical axis stays tight."""
     use_fp = bool(frames) and all(f.fp is not None for f in frames)
-    fp0 = frames[0].fp if use_fp else 0
     info = []
     last_tc, last_tf, last_rdt = "", None, ""
     prev = None
-    for idx, f in enumerate(frames):
-        if use_fp:
-            pf = f.fp - fp0
-            miss = (f.fp - prev.fp - 1) if prev is not None else 0
-        else:   # no FramePos (old logs): index densely, recover missing from forward tc jumps
-            pf = idx
-            miss = (f.tf - prev.tf - 1) if (prev is not None and f.tf is not None
-                                            and prev.tf is not None and f.tf > prev.tf) else 0
+    pos = 0
+    for f in frames:
+        if prev is None:
+            miss = 0
+        else:
+            if use_fp:
+                gap = f.fp - prev.fp - 1
+            else:   # no FramePos (old logs): recover missing from a forward tc jump
+                gap = (f.tf - prev.tf - 1) if (f.tf is not None and prev.tf is not None
+                                               and f.tf > prev.tf) else 0
+            miss = gap if gap >= micro else 0
+            pos += 1 + miss
         seam = (f.tf is not None and last_tf is not None and f.tf < last_tf - 1)
-        info.append({"pf": pf, "miss": max(0, miss), "tc": f.tc or last_tc,
+        info.append({"pf": pos, "miss": miss, "tc": f.tc or last_tc,
                      "tf": f.tf if f.tf is not None else last_tf, "rdt": f.rdt or last_rdt,
                      "cover": f.cover, "berr": f.berr, "damaged": f.damaged, "seam": seam})
         if f.tc:
@@ -198,14 +207,17 @@ def _anchors(info, fps):
     return out
 
 
-def build(frames, files, fps, bridge_s=3.0, min_s=0.5):
+def build(frames, files, fps, bridge_s=3.0, min_s=0.5, micro_s=0.25):
     """Group residual damage into re-capture spans. ``frames`` is the parsed CSV in physical
-    (FramePos) order (see :mod:`dvmerge.parse`)."""
+    (FramePos) order (see :mod:`dvmerge.parse`). ``micro_s`` is the smallest gap (in seconds) treated
+    as a real missing hole; below it dvrescue's index micro-irregularities are absorbed."""
     bridge = int(bridge_s * fps)
     min_f = int(min_s * fps)
     hole = max(1, int(0.5 * fps))    # a missing run this big breaks the coverage bar
+    micro = max(2, int(round(micro_s * fps)))
 
-    info = _carry(frames, fps)
+    info = _carry(frames, fps, micro)
+    seams = [d["pf"] for d in info if d["seam"]]
 
     # Atoms of imperfection in physical order: damaged frames and missing-frame gaps. A missing gap
     # spans the pf the absent frames would occupy, labelled by its surrounding good frames.
@@ -223,7 +235,11 @@ def build(frames, files, fps, bridge_s=3.0, min_s=0.5):
     tight = max(1, int(0.5 * fps))   # tight coalescing for the actual sub-runs (vs the bridged span)
     spans = []
     for pf0, pf1, dmg, miss, bmax, cover, rdt0, tc0, rdt1, tc1 in atoms:
-        if spans and pf0 - spans[-1].pf1 - 1 <= bridge:
+        # bridge nearby damage into one re-capture target — but never across a recording-session
+        # seam: the head/tail over-capture of an adjacent recording is its own (small) target, not
+        # part of the body. A seam between the last span and this atom forces a new span.
+        cross_seam = bool(spans) and any(spans[-1].pf1 < s <= pf0 for s in seams)
+        if spans and not cross_seam and pf0 - spans[-1].pf1 - 1 <= bridge:
             s = spans[-1]
         else:
             s = Span(pf0, tc0, rdt0)
@@ -249,8 +265,8 @@ def build(frames, files, fps, bridge_s=3.0, min_s=0.5):
     p.lost_frames = sum(s.miss for s in spans if not s.cover and s.miss and not s.dmg)
     p.spans = [s for s in spans if s.length >= min_f]
     p.spans.sort(key=lambda s: s.pf0)
-    p.seams = [d["pf"] for d in info if d["seam"]]
-    p.multi_session = bool(p.seams)
+    p.seams = seams
+    p.multi_session = bool(seams)
     p.segments = _segments(info, hole)
     p.anchors = _anchors(info, fps)
 

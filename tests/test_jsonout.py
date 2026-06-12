@@ -130,16 +130,17 @@ class TestJsonOut(unittest.TestCase):
         self.assertEqual(len(d["spans"][0]["runs"]), 3)  # but three precise runs for the map
 
     def test_missing_span_has_empty_coverage(self):
-        # frames 0..4 then jump to 10..14 -> frames 5..9 missing in every capture
+        # frames 0..4 then jump to 60..64 -> 55 frames missing in every capture (past the micro floor)
         rows = [row(i, "00:00:00:%02d" % i, "2010-01-01 08:00:00", "  ", 0) for i in range(5)]
-        rows += [row(i, "00:00:00:%02d" % i, "2010-01-01 08:00:00", "  ", 0) for i in range(10, 15)]
+        rows += [row(60 + i, "00:00:%02d:%02d" % ((60 + i) // 25, (60 + i) % 25),
+                     "2010-01-01 08:00:02", "  ", 0) for i in range(5)]
         d = self._analysis(rows)
         self.assertEqual(len(d["spans"]), 1)
         s = d["spans"][0]
         self.assertEqual(s["kind"], "missing")
-        self.assertEqual(s["miss"], 5)
+        self.assertEqual(s["miss"], 55)
         self.assertEqual(s["cover"], [])                 # nothing to improve on — lost unless re-captured
-        self.assertEqual(d["lost_frames"], 5)
+        self.assertEqual(d["lost_frames"], 55)
 
 
 if __name__ == "__main__":

@@ -69,18 +69,30 @@ class TestPlan(unittest.TestCase):
         self.assertEqual(s.cover, {0})
         self.assertEqual(s.kind, "mosaic")
 
-    def test_timecode_gap_is_missing_and_lost(self):
-        # frames 0..4 then jump to 10..14 -> frames 5..9 missing in every capture
+    def test_framepos_gap_is_missing_and_lost(self):
+        # frames 0..4 then jump to 60..64 -> frames 5..59 (55) missing in every capture. The gap is
+        # well past the micro-gap floor, so it counts as a real hole with no copy.
         rows = [row(i, "00:00:00:%02d" % i, "2010-01-01 08:00:00", "  ", 0) for i in range(5)]
-        rows += [row(i, "00:00:00:%02d" % i, "2010-01-01 08:00:00", "  ", 0) for i in range(10, 15)]
+        rows += [row(60 + i, "00:00:%02d:%02d" % ((60 + i) // 25, (60 + i) % 25),
+                     "2010-01-01 08:00:02", "  ", 0) for i in range(5)]
         p = self._build(rows)
         self.assertEqual(len(p.spans), 1)
         s = p.spans[0]
-        self.assertEqual(s.miss, 5)
+        self.assertEqual(s.miss, 55)
         self.assertEqual(s.dmg, 0)
         self.assertEqual(s.kind, "missing")
-        self.assertEqual(p.lost_frames, 5)
+        self.assertEqual(p.lost_frames, 55)
         self.assertIn("no copy at all", report.render(p))
+
+    def test_micro_gap_is_absorbed_not_missing(self):
+        # dvrescue's multi-capture index leaves tiny few-frame jumps; a sub-`micro` gap is absorbed
+        # (a mostly-clean tape must not read as missing / collapse into one whole-tape span).
+        rows = [row(i, "00:00:00:%02d" % i, "2010-01-01 08:00:00", "  ", 0) for i in range(5)]
+        rows += [row(8 + i, "00:00:00:%02d" % (8 + i), "2010-01-01 08:00:00", "  ", 0)
+                 for i in range(5)]   # FramePos jumps 4 -> 8 = 3 missing, below the ~6-frame floor
+        p = self._build(rows)
+        self.assertEqual(p.miss, 0)
+        self.assertEqual(p.spans, [])
 
     def test_dense_framepos_tc_jump_is_not_missing(self):
         # FramePos stays dense (the frames are all present) while tc leaps 4 -> 1000: a camera
