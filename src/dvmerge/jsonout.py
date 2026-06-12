@@ -42,10 +42,12 @@ def _span(s):
     }
 
 
-def _source(src, tag, damage):
-    """Per-capture: its coverage span (or ``aligned: False``) plus ``damage`` — the tape-TC runs
-    where this capture is itself damaged, for showing on its lane."""
-    base = {"tag": tag, "aligned": src is not None, "damage": damage or []}
+def _source(src, tag, damage, coverage):
+    """Per-capture: its coverage span (or ``aligned: False``), ``damage`` — the tape-TC runs where
+    this capture is itself damaged — and ``coverage``, the contiguous tape-TC runs it actually holds
+    (split at internal gaps), so a consumer can draw the real held regions and drops on its lane."""
+    base = {"tag": tag, "aligned": src is not None,
+            "damage": damage or [], "coverage": coverage or []}
     if src is not None:
         tc0, tc1, rdt0, rdt1 = src
         base.update({"tc0": tc0, "tc1": tc1, "rdt0": rdt0, "rdt1": rdt1})
@@ -61,6 +63,7 @@ def analysis(plan):
     output has a clean copy, so no span survives."""
     tags = [_tag(f) for f in plan.files]
     sd = getattr(plan, "source_damage", None) or []
+    sc = getattr(plan, "source_coverage", None) or []
     return {
         "schema": SCHEMA,
         "version": __version__,
@@ -78,6 +81,7 @@ def analysis(plan):
         "files": tags,
         "spans": [_span(s) for s in plan.spans],
         "sources": [_source(plan.sources[i] if i < len(plan.sources) else None, tags[i],
-                            sd[i] if i < len(sd) else [])
+                            sd[i] if i < len(sd) else [],
+                            sc[i] if i < len(sc) else [])
                     for i in range(len(plan.files))],
     }

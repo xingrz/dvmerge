@@ -84,12 +84,14 @@ class Span:
 
 class Plan:
     __slots__ = ("fps", "files", "rdt0", "rdt1", "tc0", "tc1", "total_frames",
-                 "clean", "dmg", "miss", "spans", "lost_frames", "sources", "source_damage")
+                 "clean", "dmg", "miss", "spans", "lost_frames", "sources", "source_damage",
+                 "source_coverage")
 
     def __init__(self):
         self.spans = []
         self.sources = []   # per input index: (tc0, tc1, rdt0, rdt1) it covers, or None
-        self.source_damage = []  # per input index: list of {tc0, tc1, frames} damaged runs ('P')
+        self.source_damage = []   # per input index: list of {tc0, tc1, frames} damaged runs ('P')
+        self.source_coverage = []  # per input index: list of {tc0, tc1} contiguous covered runs
 
 
 def source_damage(frames, nfiles, fps, bridge_s=0.5):
@@ -113,6 +115,33 @@ def source_damage(frames, nfiles, fps, bridge_s=0.5):
     for runs in out:
         for run in runs:
             del run["_tf1"]
+    return out
+
+
+def source_coverage(frames, nfiles, fps, gap_s=0.5):
+    """Per input capture, the contiguous tape-TC runs it actually holds (frames where it is non-``M``,
+    damaged or not). A capture can drop content mid-tape — a dropout, a stop/start — so its coverage
+    is NOT one solid span: split it wherever its covered frames jump by ``gap_s`` worth of frames or
+    more, so a consumer can draw the real gaps on the lane instead of a bar that pretends to cover
+    them. Mirrors hdvmerge's ``_source_coverage`` for cross-engine parity."""
+    gap_thresh = max(1, int(gap_s * fps))
+    out = [[] for _ in range(nfiles)]
+    cur = [None] * nfiles      # open run [tc0, tc1, last_tf] per input, or None
+    for f in frames:
+        for i in f.cover:
+            if i >= nfiles:
+                continue
+            run = cur[i]
+            if run is not None and f.tf - run[2] >= gap_thresh:
+                out[i].append({"tc0": run[0], "tc1": run[1]})
+                run = None
+            if run is None:
+                cur[i] = [f.tc, f.tc, f.tf]
+            else:
+                run[1], run[2] = f.tc, f.tf
+    for i in range(nfiles):
+        if cur[i] is not None:
+            out[i].append({"tc0": cur[i][0], "tc1": cur[i][1]})
     return out
 
 
@@ -175,4 +204,5 @@ def build(frames, files, fps, bridge_s=3.0, min_s=0.5):
                     src[i][1], src[i][3] = f.tc, f.rdt
     p.sources = [tuple(x) if x else None for x in src]
     p.source_damage = source_damage(frames, len(files), fps)
+    p.source_coverage = source_coverage(frames, len(files), fps)
     return p

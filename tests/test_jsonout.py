@@ -103,6 +103,20 @@ class TestJsonOut(unittest.TestCase):
         self.assertEqual(a2["damage"], [])               # A-2 is clean
         self.assertEqual(json.loads(json.dumps(d)), d)
 
+    def test_source_coverage_splits_at_internal_drops(self):
+        # file 0 holds 0..9, drops out 10..25 (file 1 keeps them), resumes 26..39; file 1 clean.
+        rows = []
+        for i in range(40):
+            st = "M " if 10 <= i <= 25 else "  "      # file 0 missing the middle stretch
+            rows.append(row(i, "00:00:%02d:%02d" % (i // 25, i % 25), "2010-01-01 08:00:00", st, 0))
+        d = self._analysis(rows)
+        a1 = next(s for s in d["sources"] if s["tag"] == "A-1")
+        a2 = next(s for s in d["sources"] if s["tag"] == "A-2")
+        self.assertEqual(len(a1["coverage"]), 2, "A-1 dropped a stretch -> two covered runs")
+        self.assertEqual(len(a2["coverage"]), 1, "A-2 covers the whole tape -> one run")
+        self.assertTrue(a1["coverage"][0]["tc0"] and a1["coverage"][1]["tc1"])
+        self.assertEqual(json.loads(json.dumps(d)), d)
+
     def test_span_runs_are_tight_not_bridged(self):
         # damaged frames at 10, 30, 50 — within one bridged re-capture span, but >0.5 s apart, so the
         # map should see THREE tight sub-runs (not one filled block)
