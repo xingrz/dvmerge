@@ -82,26 +82,49 @@ class TestPlan(unittest.TestCase):
         self.assertEqual(p.lost_frames, 5)
         self.assertIn("no copy at all", report.render(p))
 
-    def test_abst_continuous_tc_jump_is_not_missing(self):
-        # tc leaps 4 -> 1004 (a camera stop/start) but abst stays contiguous (8/frame): nothing lost.
-        rows = [row(i, "00:00:00:%02d" % i, "2010-01-01 08:00:00", "  ", 0, abst=100 + 8 * i)
-                for i in range(5)]
-        rows += [row(5 + i, "00:00:40:%02d" % i, "2010-01-01 08:00:02", "  ", 0, abst=140 + 8 * i)
-                 for i in range(5)]   # abst 140 follows 132 -> one step, no gap
+    def test_dense_framepos_tc_jump_is_not_missing(self):
+        # FramePos stays dense (the frames are all present) while tc leaps 4 -> 1000: a camera
+        # stop/start, not a gap. Nothing is missing — the footage is continuous on the tape.
+        rows = [row(i, "00:00:00:%02d" % i, "2010-01-01 08:00:00", "  ", 0) for i in range(5)]
+        rows += [row(5 + i, "00:00:40:%02d" % i, "2010-01-01 08:00:02", "  ", 0) for i in range(5)]
         p = self._build(rows)
         self.assertEqual(p.miss, 0)
         self.assertEqual(p.spans, [])
+        self.assertFalse(p.multi_session)   # a forward tc jump is not a new recording session
 
-    def test_abst_gap_counts_as_missing(self):
-        # abst jumps by 800 (100 frames of 8) with matching tc gap: 99 frames genuinely missing.
-        rows = [row(i, "00:00:00:%02d" % i, "2010-01-01 08:00:00", "  ", 0, abst=100 + 8 * i)
-                for i in range(5)]
-        rows += [row(5 + i, "00:00:04:%02d" % i, "2010-01-01 08:00:00", "  ", 0, abst=932 + 8 * i)
-                 for i in range(5)]   # 932 - 132 = 800 -> (800/8 - 1) = 99 missing
+    def test_framepos_gap_counts_as_missing(self):
+        # FramePos jumps 4 -> 104 (99 absent rows): those frames are missing from every capture.
+        rows = [row(i, "00:00:00:%02d" % i, "2010-01-01 08:00:00", "  ", 0) for i in range(5)]
+        rows += [row(104 + i, "00:00:04:%02d" % i, "2010-01-01 08:00:00", "  ", 0) for i in range(5)]
         p = self._build(rows)
         self.assertEqual(p.miss, 99)
         self.assertEqual(len(p.spans), 1)
         self.assertEqual(p.lost_frames, 99)
+
+    def test_backward_tc_is_a_seam_not_a_giant_gap(self):
+        # A second recording session whose record-run tc restarts low (overwrite / different-day
+        # footage / over-capture). The tape is physically continuous — FramePos stays dense — so this
+        # is a seam, NOT ~36 minutes of phantom missing tape the way a tc-sorted layout would invent.
+        rows = [row(i, "00:36:05:%02d" % i, "2008-06-26 21:58:00", "  ", 0) for i in range(10)]
+        rows += [row(10 + i, "00:00:00:%02d" % i, "2008-06-27 15:18:00", "  ", 0) for i in range(10)]
+        p = self._build(rows)
+        self.assertTrue(p.multi_session)
+        self.assertEqual(p.seams, [10])       # seam at the physical position where tc restarts
+        self.assertEqual(p.miss, 0)           # physically continuous: nothing missing
+        self.assertEqual(p.total_frames, 20)  # NOT inflated to the tc span (~36 min)
+        self.assertEqual(p.spans, [])
+
+    def test_unlabelled_present_frames_are_not_missing(self):
+        # dvrescue leaves tc/abst blank on some present frames; they still have a row (Status present).
+        # They must count as covered, not as a missing gap (FramePos stays dense through them).
+        rows = []
+        for i in range(20):
+            tc = "" if 5 <= i <= 9 else "00:00:%02d:%02d" % (i // 25, i % 25)
+            rows.append(row(i, tc, "2010-01-01 08:00:00", "  ", 0))
+        p = self._build(rows)
+        self.assertEqual(p.miss, 0)
+        self.assertEqual(p.total_frames, 20)
+        self.assertEqual(p.spans, [])
 
     def test_bridge_merges_nearby_damage(self):
         rows = []

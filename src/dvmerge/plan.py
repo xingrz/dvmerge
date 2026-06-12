@@ -4,76 +4,86 @@ Two kinds of frame survive the merge imperfect:
 
   * **mosaic** — a frame is present but ``BlockErrors > 0``: every capture that had it was damaged,
     so the merged frame still carries concealed blocks.
-  * **missing** — a tape frame has no row at all (a gap in the timecode sequence): no capture wrote
-    it, so it is absent from the output entirely. Worse than mosaic — there is nothing to show.
+  * **missing** — a tape frame has no row at all (a jump in ``FramePos``): no capture wrote it, so it
+    is absent from the output entirely. Worse than mosaic — there is nothing to show.
 
 Isolated bad frames are everywhere on a dirty tape, so we coalesce them into spans, bridging short
 clean stretches (``bridge`` seconds): two damaged patches a second apart are one re-capture target,
 because you rewind and re-shoot the region either way. Each span records which captures cover it and
 how many frames within it are flat-out missing — that is what tells you whether re-capturing can
 even help (you have dirty copies to improve on) or is mandatory (no copy exists).
+
+**Coordinate.** Everything here is laid out on the *physical* axis ``pf`` — ``FramePos`` shifted to
+start at zero, i.e. dvrescue's dense index into the reconstructed tape, with truly-missing frames
+taking their width (a FramePos jump). NOT on tape timecode. A tape commonly holds several recording
+sessions — old footage partly overwritten, different-day footage spliced on, a little over-capture
+at each end. Each session's record-run ``tc`` restarts, so tc is not monotonic across the tape;
+using it as the layout axis scatters physically-adjacent content and invents enormous phantom gaps
+where one session's high tc abuts the next session's low tc. We segment the tape at those session
+boundaries (``seam`` — the tc steps backward) and label each segment with its own tc/rec, the way the
+tape actually plays.
 """
 
-import collections
 
-
-def _abst_step(frames):
-    """The tracks-per-frame abst increment (8 for PAL), taken as the *mode* of consecutive deltas.
-
-    Mode, not minimum: an overlap seam occasionally yields a delta of 5–7 or a near-duplicate, and a
-    single small outlier would otherwise be mistaken for the unit and make every normal +8 look like
-    a missing frame. None if no capture reported abst, in which case we fall back to the tc delta."""
-    deltas = collections.Counter()
+def _carry(frames, fps):
+    """One pass over the frames (already in physical/FramePos order): attach each frame's physical
+    position ``pf`` and the count of frames missing immediately before it, carry tc/rec forward across
+    rows dvrescue left unlabelled, and flag the recording-session ``seam`` frames (where the
+    record-run tc steps backward). Returns a list of per-frame dicts."""
+    use_fp = bool(frames) and all(f.fp is not None for f in frames)
+    fp0 = frames[0].fp if use_fp else 0
+    info = []
+    last_tc, last_tf, last_rdt = "", None, ""
     prev = None
-    for f in frames:
-        if f.abst is not None:
-            if prev is not None and f.abst > prev:
-                deltas[f.abst - prev] += 1
-            prev = f.abst
-    return deltas.most_common(1)[0][0] if deltas else None
-
-
-def _missing_between(prev, cur, step):
-    """How many tape frames are truly missing between two consecutive present frames.
-
-    The physical track number ``abst`` is the arbiter: a tape with continuous abst but a jumping tc
-    (a camera stop/start, or non-record-run timecode) is *not* missing anything — that jump counts as
-    zero. Rounded to the nearest whole frame-step so a one-track abst irregularity isn't a gap. Only
-    when neither side reports abst do we fall back to the tc delta."""
-    if step and prev.abst is not None and cur.abst is not None:
-        return max(0, int(round((cur.abst - prev.abst) / step)) - 1)
-    return max(0, cur.tf - prev.tf - 1)
+    for idx, f in enumerate(frames):
+        if use_fp:
+            pf = f.fp - fp0
+            miss = (f.fp - prev.fp - 1) if prev is not None else 0
+        else:   # no FramePos (old logs): index densely, recover missing from forward tc jumps
+            pf = idx
+            miss = (f.tf - prev.tf - 1) if (prev is not None and f.tf is not None
+                                            and prev.tf is not None and f.tf > prev.tf) else 0
+        seam = (f.tf is not None and last_tf is not None and f.tf < last_tf - 1)
+        info.append({"pf": pf, "miss": max(0, miss), "tc": f.tc or last_tc,
+                     "tf": f.tf if f.tf is not None else last_tf, "rdt": f.rdt or last_rdt,
+                     "cover": f.cover, "berr": f.berr, "damaged": f.damaged, "seam": seam})
+        if f.tc:
+            last_tc, last_tf = f.tc, f.tf
+        if f.rdt:
+            last_rdt = f.rdt
+        prev = f
+    return info
 
 
 class Span:
-    """A contiguous run of imperfect tape worth re-capturing."""
+    """A contiguous run of imperfect tape worth re-capturing (on the physical axis ``pf``)."""
 
-    __slots__ = ("tf0", "tf1", "tc0", "tc1", "rdt0", "rdt1",
+    __slots__ = ("pf0", "pf1", "tc0", "tc1", "rdt0", "rdt1",
                  "dmg", "miss", "bmax", "cover", "runs")
 
-    def __init__(self, tf0, tc0, rdt0):
-        self.tf0 = self.tf1 = tf0
+    def __init__(self, pf0, tc0, rdt0):
+        self.pf0 = self.pf1 = pf0
         self.tc0 = self.tc1 = tc0
         self.rdt0 = self.rdt1 = rdt0
         self.dmg = 0          # frames present but damaged
         self.miss = 0         # frames missing from every capture
         self.bmax = 0         # worst single-frame block-error count
         self.cover = set()    # input indices that have *some* frame in this span
-        self.runs = []        # tight damaged sub-runs [{tf0,tf1,tc0,tc1}] — the ACTUAL damage
+        self.runs = []        # tight damaged sub-runs [{pf0,pf1,tc0,tc1}] — the ACTUAL damage
         #                       inside the span (the span bridges short clean gaps for the cue, but
         #                       these are the real scattered runs, for drawing on the map)
 
-    def add_run(self, tf0, tf1, tc0, tc1, tight):
+    def add_run(self, pf0, pf1, tc0, tc1, tight):
         """Record an imperfect atom as a tight sub-run, coalescing only across gaps <= ``tight``."""
-        if self.runs and tf0 - self.runs[-1]["tf1"] <= tight:
-            self.runs[-1]["tf1"] = tf1
+        if self.runs and pf0 - self.runs[-1]["pf1"] <= tight:
+            self.runs[-1]["pf1"] = pf1
             self.runs[-1]["tc1"] = tc1
         else:
-            self.runs.append({"tf0": tf0, "tf1": tf1, "tc0": tc0, "tc1": tc1})
+            self.runs.append({"pf0": pf0, "pf1": pf1, "tc0": tc0, "tc1": tc1})
 
     @property
     def length(self):
-        return self.tf1 - self.tf0 + 1
+        return self.pf1 - self.pf0 + 1
 
     @property
     def kind(self):
@@ -85,124 +95,180 @@ class Span:
 class Plan:
     __slots__ = ("fps", "files", "rdt0", "rdt1", "tc0", "tc1", "total_frames",
                  "clean", "dmg", "miss", "spans", "lost_frames", "sources", "source_damage",
-                 "source_coverage")
+                 "source_coverage", "segments", "seams", "source_pf", "anchors", "multi_session")
 
     def __init__(self):
         self.spans = []
         self.sources = []   # per input index: (tc0, tc1, rdt0, rdt1) it covers, or None
         self.source_damage = []   # per input index: list of {tc0, tc1, frames} damaged runs ('P')
-        self.source_coverage = []  # per input index: list of {tc0, tc1} contiguous covered runs
+        self.source_coverage = []  # per input index: list of {tc0, tc1, pf0, pf1} covered runs
+        self.segments = []  # coarse covered runs on the physical axis (see _segments)
+        self.seams = []     # physical positions (pf) of recording-session boundaries
+        self.anchors = []   # sampled (pf -> tc, rdt) curve for ruler labels (see _anchors)
+        self.source_pf = []  # per input index: (pf0, pf1) physical coverage span, or None
+        self.multi_session = False
 
 
-def source_damage(frames, nfiles, fps, bridge_s=0.5):
+def source_damage(info, nfiles, fps, bridge_s=0.5):
     """Per input capture, the tape-TC runs where *that capture itself* is damaged (Status ``'P'``),
-    independent of whether the merge repaired it from another copy — so a consumer can show a
-    capture's own damage on its lane. Consecutive damaged frames within ``bridge_s`` are coalesced
-    into one run."""
+    independent of whether the merge repaired it from another copy. Consecutive damaged frames within
+    ``bridge_s`` (by physical position, so a seam doesn't merge unrelated damage) are coalesced."""
     bridge = max(1, int(bridge_s * fps))
     out = [[] for _ in range(nfiles)]
-    for f in frames:
-        for i in f.damaged:
+    for d in info:
+        for i in d["damaged"]:
             if i >= nfiles:
                 continue
             runs = out[i]
-            if runs and f.tf - runs[-1]["_tf1"] <= bridge:
-                runs[-1]["tc1"] = f.tc
-                runs[-1]["_tf1"] = f.tf
+            if runs and d["pf"] - runs[-1]["_pf1"] <= bridge:
+                runs[-1]["tc1"] = d["tc"]
+                runs[-1]["_pf1"] = d["pf"]
                 runs[-1]["frames"] += 1
             else:
-                runs.append({"tc0": f.tc, "tc1": f.tc, "_tf1": f.tf, "frames": 1})
+                runs.append({"tc0": d["tc"], "tc1": d["tc"], "_pf1": d["pf"], "frames": 1})
     for runs in out:
         for run in runs:
-            del run["_tf1"]
+            del run["_pf1"]
     return out
 
 
-def source_coverage(frames, nfiles, fps, gap_s=0.5):
-    """Per input capture, the contiguous tape-TC runs it actually holds (frames where it is non-``M``,
-    damaged or not). A capture can drop content mid-tape — a dropout, a stop/start — so its coverage
-    is NOT one solid span: split it wherever its covered frames jump by ``gap_s`` worth of frames or
-    more, so a consumer can draw the real gaps on the lane instead of a bar that pretends to cover
-    them. Mirrors hdvmerge's ``_source_coverage`` for cross-engine parity."""
+def source_coverage(info, nfiles, fps, gap_s=0.5):
+    """Per input capture, the contiguous runs it actually holds, split at internal drops by physical
+    position so a consumer can draw the real gaps on the lane. Each run carries its tape-TC span
+    (labels) and its physical ``pf`` span (layout). Mirrors hdvmerge's ``_source_coverage``."""
     gap_thresh = max(1, int(gap_s * fps))
     out = [[] for _ in range(nfiles)]
-    cur = [None] * nfiles      # open run [tc0, tc1, last_tf] per input, or None
-    for f in frames:
-        for i in f.cover:
+    cur = [None] * nfiles      # open run [tc0, tc1, pf0, last_pf] per input, or None
+    for d in info:
+        for i in d["cover"]:
             if i >= nfiles:
                 continue
             run = cur[i]
-            if run is not None and f.tf - run[2] >= gap_thresh:
-                out[i].append({"tc0": run[0], "tc1": run[1]})
+            if run is not None and d["pf"] - run[3] >= gap_thresh:
+                out[i].append({"tc0": run[0], "tc1": run[1], "pf0": run[2], "pf1": run[3]})
                 run = None
             if run is None:
-                cur[i] = [f.tc, f.tc, f.tf]
+                cur[i] = [d["tc"], d["tc"], d["pf"], d["pf"]]
             else:
-                run[1], run[2] = f.tc, f.tf
+                run[1], run[3] = d["tc"], d["pf"]
     for i in range(nfiles):
         if cur[i] is not None:
-            out[i].append({"tc0": cur[i][0], "tc1": cur[i][1]})
+            r = cur[i]
+            out[i].append({"tc0": r[0], "tc1": r[1], "pf0": r[2], "pf1": r[3]})
+    return out
+
+
+def _segments(info, hole):
+    """Coarse covered runs on the physical axis: the green coverage bar, split only where it really
+    breaks — at a recording-session ``seam`` (tc restarts) or a ``gap`` of >= ``hole`` truly-missing
+    frames (a visible hole). Smaller gaps are bridged into the run; the actual missing frames within
+    are still drawn on top as damage. Each run carries its pf extent (layout) and tc/rec ends (labels,
+    carried across unlabelled frames), so a consumer lays it out by pf and labels it by tc."""
+    segs = []
+    cur = None
+    for i, d in enumerate(info):
+        brk = None
+        if i > 0:
+            if d["seam"]:
+                brk = "seam"
+            elif d["miss"] >= hole:
+                brk = "gap"
+        if cur is None or brk is not None:
+            cur = {"pf0": d["pf"], "pf1": d["pf"], "tc0": d["tc"], "tc1": d["tc"],
+                   "rdt0": d["rdt"], "rdt1": d["rdt"], "break_before": brk}
+            segs.append(cur)
+        else:
+            cur["pf1"], cur["tc1"], cur["rdt1"] = d["pf"], d["tc"], d["rdt"]
+    return segs
+
+
+def _anchors(info, fps):
+    """A sampled ``pf -> (tc, rec)`` curve for the ruler: enough points that a consumer can read the
+    tape timecode and wall clock at any position by interpolation, snapping across a seam. We anchor
+    the first and last frame, every seam, and roughly once a second — cheap and accurate without one
+    point per frame."""
+    step = max(1, int(round(fps)))
+    out = []
+    last = None
+    n = len(info)
+    for i, d in enumerate(info):
+        if i == 0 or i == n - 1 or d["seam"] or last is None or d["pf"] - last >= step:
+            out.append({"pf": d["pf"], "tc": d["tc"], "rdt": d["rdt"]})
+            last = d["pf"]
     return out
 
 
 def build(frames, files, fps, bridge_s=3.0, min_s=0.5):
-    """Group residual damage into re-capture spans. ``frames`` is the parsed, sorted CSV."""
+    """Group residual damage into re-capture spans. ``frames`` is the parsed CSV in physical
+    (FramePos) order (see :mod:`dvmerge.parse`)."""
     bridge = int(bridge_s * fps)
     min_f = int(min_s * fps)
+    hole = max(1, int(0.5 * fps))    # a missing run this big breaks the coverage bar
 
-    # Atoms of imperfection in tape order: damaged frames and missing-frame gaps. A missing gap is
-    # labelled by its surrounding good frames (last-good -> first-good), the points you cue between.
-    step = _abst_step(frames)
-    atoms = []  # (tf0, tf1, dmg, miss, bmax, cover, rdt0, tc0, rdt1, tc1)
+    info = _carry(frames, fps)
+
+    # Atoms of imperfection in physical order: damaged frames and missing-frame gaps. A missing gap
+    # spans the pf the absent frames would occupy, labelled by its surrounding good frames.
+    atoms = []  # (pf0, pf1, dmg, miss, bmax, cover, rdt0, tc0, rdt1, tc1)
     prev = None
-    for f in frames:
-        if prev is not None:
-            miss = _missing_between(prev, f, step)
-            if miss > 0:
-                atoms.append((prev.tf + 1, prev.tf + miss, 0, miss, 0, frozenset(),
-                              prev.rdt, prev.tc, f.rdt, f.tc))
-        if f.berr > 0:
-            atoms.append((f.tf, f.tf, 1, 0, f.berr, f.cover, f.rdt, f.tc, f.rdt, f.tc))
-        prev = f
+    for d in info:
+        if prev is not None and d["miss"] > 0:
+            atoms.append((prev["pf"] + 1, d["pf"] - 1, 0, d["miss"], 0, frozenset(),
+                          prev["rdt"], prev["tc"], d["rdt"], d["tc"]))
+        if d["berr"] > 0:
+            atoms.append((d["pf"], d["pf"], 1, 0, d["berr"], d["cover"],
+                          d["rdt"], d["tc"], d["rdt"], d["tc"]))
+        prev = d
 
     tight = max(1, int(0.5 * fps))   # tight coalescing for the actual sub-runs (vs the bridged span)
     spans = []
-    for tf0, tf1, dmg, miss, bmax, cover, rdt0, tc0, rdt1, tc1 in atoms:
-        if spans and tf0 - spans[-1].tf1 - 1 <= bridge:
+    for pf0, pf1, dmg, miss, bmax, cover, rdt0, tc0, rdt1, tc1 in atoms:
+        if spans and pf0 - spans[-1].pf1 - 1 <= bridge:
             s = spans[-1]
         else:
-            s = Span(tf0, tc0, rdt0)
+            s = Span(pf0, tc0, rdt0)
             spans.append(s)
-        s.tf1, s.tc1, s.rdt1 = tf1, tc1, rdt1
+        s.pf1, s.tc1, s.rdt1 = pf1, tc1, rdt1
         s.dmg += dmg
         s.miss += miss
         s.bmax = max(s.bmax, bmax)
         s.cover |= set(cover)
-        s.add_run(tf0, tf1, tc0, tc1, tight)
+        s.add_run(pf0, pf1, tc0, tc1, tight)
 
     p = Plan()
     p.fps = fps
     p.files = files
-    p.rdt0, p.rdt1 = frames[0].rdt, frames[-1].rdt
-    p.tc0, p.tc1 = frames[0].tc, frames[-1].tc
-    p.total_frames = frames[-1].tf - frames[0].tf + 1
+    p.rdt0 = info[0]["rdt"] if info else ""
+    p.rdt1 = info[-1]["rdt"] if info else ""
+    p.tc0 = info[0]["tc"] if info else ""
+    p.tc1 = info[-1]["tc"] if info else ""
+    p.total_frames = (info[-1]["pf"] + 1) if info else 0
     p.miss = sum(s.miss for s in spans)
     p.dmg = sum(s.dmg for s in spans)
     p.clean = p.total_frames - p.miss - p.dmg
     p.lost_frames = sum(s.miss for s in spans if not s.cover and s.miss and not s.dmg)
     p.spans = [s for s in spans if s.length >= min_f]
-    p.spans.sort(key=lambda s: s.tf0)
+    p.spans.sort(key=lambda s: s.pf0)
+    p.seams = [d["pf"] for d in info if d["seam"]]
+    p.multi_session = bool(p.seams)
+    p.segments = _segments(info, hole)
+    p.anchors = _anchors(info, fps)
 
-    # Per-capture coverage span (first/last frame each input contributes), for the Sources table.
+    # Per-capture coverage span (first/last frame each input contributes), tc for labels and pf for
+    # layout, for the Sources table and the tape map.
     src = [None] * len(files)
-    for f in frames:
-        for i in f.cover:
+    src_pf = [None] * len(files)
+    for d in info:
+        for i in d["cover"]:
             if i < len(files):
                 if src[i] is None:
-                    src[i] = [f.tc, f.tc, f.rdt, f.rdt]
+                    src[i] = [d["tc"], d["tc"], d["rdt"], d["rdt"]]
+                    src_pf[i] = [d["pf"], d["pf"]]
                 else:
-                    src[i][1], src[i][3] = f.tc, f.rdt
+                    src[i][1], src[i][3] = d["tc"], d["rdt"]
+                    src_pf[i][1] = d["pf"]
     p.sources = [tuple(x) if x else None for x in src]
-    p.source_damage = source_damage(frames, len(files), fps)
-    p.source_coverage = source_coverage(frames, len(files), fps)
+    p.source_pf = [tuple(x) if x else None for x in src_pf]
+    p.source_damage = source_damage(info, len(files), fps)
+    p.source_coverage = source_coverage(info, len(files), fps)
     return p
