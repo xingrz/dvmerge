@@ -32,7 +32,8 @@ def _rm(p):
         pass
 
 
-def merge_log(files, output=None, *, no_cache=False, cache_dir=None, dvrescue_bin=None):
+def merge_log(files, output=None, *, no_cache=False, cache_dir=None, dvrescue_bin=None,
+              on_progress=None):
     """Return ``(csv_path, cleanup)`` for ``files``, running dvrescue only on a cache miss.
 
     With ``output`` set the merge always runs (the .dv must be produced) and is moved into place;
@@ -60,7 +61,7 @@ def merge_log(files, output=None, *, no_cache=False, cache_dir=None, dvrescue_bi
             _rm(p)
 
     try:
-        dvrescue.merge(files, tmp_dv, tmp_csv, binary=dvrescue_bin)
+        dvrescue.merge(files, tmp_dv, tmp_csv, binary=dvrescue_bin, on_progress=on_progress)
     except Exception:
         cleanup()
         raise
@@ -77,13 +78,14 @@ def merge_log(files, output=None, *, no_cache=False, cache_dir=None, dvrescue_bi
 
 
 def analyze(files, *, output=None, fps=DEFAULT_FPS, bridge_s=3.0, min_s=0.5,
-            no_cache=False, cache_dir=None, dvrescue_bin=None):
+            no_cache=False, cache_dir=None, dvrescue_bin=None, on_progress=None):
     """Discover → merge (cached) → parse → plan. Returns a :class:`dvmerge.plan.Plan`.
 
     Raises ``RuntimeError`` if the merge log has no frames (mismatched inputs) or dvrescue fails.
-    With ``output`` set, the merged DV is also kept at that path."""
+    With ``output`` set, the merged DV is also kept at that path. ``on_progress(frames_done)`` is
+    forwarded to the dvrescue merge so a caller can show export progress."""
     csv_path, cleanup = merge_log(files, output, no_cache=no_cache, cache_dir=cache_dir,
-                                  dvrescue_bin=dvrescue_bin)
+                                  dvrescue_bin=dvrescue_bin, on_progress=on_progress)
     try:
         frames, _ = parse.parse(csv_path, fps, nfiles=len(files))
         if not frames:

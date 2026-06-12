@@ -18,6 +18,7 @@ import os
 import shutil
 import subprocess
 import sys
+import threading
 import time
 
 
@@ -30,8 +31,12 @@ def find(explicit=None):
     return path
 
 
-def merge(files, merged_path, csv_path, binary="dvrescue", quiet=False):
-    """Run the merge. ``merged_path`` and ``csv_path`` must not pre-exist. Raises on failure."""
+def merge(files, merged_path, csv_path, binary="dvrescue", quiet=False, on_progress=None):
+    """Run the merge. ``merged_path`` and ``csv_path`` must not pre-exist. Raises on failure.
+
+    dvrescue streams one line per processed frame to stdout (``--csv``); ``on_progress(frames_done)``
+    is called as those arrive (throttled) so a caller can show real export progress instead of a
+    blind spinner."""
     for p in (merged_path, csv_path):
         if os.path.exists(p):
             raise RuntimeError("refusing to overwrite existing %s (internal: pass a fresh path)" % p)
@@ -43,16 +48,33 @@ def merge(files, merged_path, csv_path, binary="dvrescue", quiet=False):
         sys.stderr.flush()
     t0 = time.monotonic()
     proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL,
-                            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    # drain stderr in a thread so a chatty error stream can't deadlock the stdout read below
+    err_box = []
+    th = threading.Thread(target=lambda: err_box.append(proc.stderr.read() if proc.stderr else b""))
+    th.daemon = True
+    th.start()
+
     tty = sys.stderr.isatty()
-    while proc.poll() is None:
-        if not quiet and tty:
-            sys.stderr.write("\r  %s … %ds" % (label, int(time.monotonic() - t0)))
-            sys.stderr.flush()
-        time.sleep(0.5)
-    err = proc.stderr.read().decode("utf-8", "replace") if proc.stderr else ""
+    count = 0
+    last = 0.0
+    for _line in proc.stdout or ():            # one line per frame dvrescue emits
+        count += 1
+        now = time.monotonic()
+        if now - last >= 0.25:                 # throttle progress + the tty line
+            last = now
+            if on_progress:
+                on_progress(count)
+            if not quiet and tty:
+                sys.stderr.write("\r  %s … %ds (%d frames)" % (label, int(now - t0), count))
+                sys.stderr.flush()
+    proc.wait()
+    th.join()
+    err = (b"".join(err_box)).decode("utf-8", "replace")
+    if on_progress:
+        on_progress(count)
     if not quiet and tty:
-        sys.stderr.write("\r  %s … %ds, done\n" % (label, int(time.monotonic() - t0)))
+        sys.stderr.write("\r  %s … %ds, done (%d frames)\n" % (label, int(time.monotonic() - t0), count))
         sys.stderr.flush()
 
     if proc.returncode != 0:
