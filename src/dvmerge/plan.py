@@ -129,15 +129,13 @@ def source_damage(info, nfiles, fps, bridge_s=0.5):
             if i >= nfiles:
                 continue
             runs = out[i]
-            if runs and d["pf"] - runs[-1]["_pf1"] <= bridge:
+            if runs and d["pf"] - runs[-1]["pf1"] <= bridge:
                 runs[-1]["tc1"] = d["tc"]
-                runs[-1]["_pf1"] = d["pf"]
+                runs[-1]["pf1"] = d["pf"]
                 runs[-1]["frames"] += 1
             else:
-                runs.append({"tc0": d["tc"], "tc1": d["tc"], "_pf1": d["pf"], "frames": 1})
-    for runs in out:
-        for run in runs:
-            del run["_pf1"]
+                runs.append({"tc0": d["tc"], "tc1": d["tc"], "pf0": d["pf"], "pf1": d["pf"],
+                             "frames": 1})
     return out
 
 
