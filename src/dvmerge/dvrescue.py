@@ -31,16 +31,23 @@ def find(explicit=None):
     return path
 
 
-def merge(files, merged_path, csv_path, binary="dvrescue", quiet=False, on_progress=None):
-    """Run the merge. ``merged_path`` and ``csv_path`` must not pre-exist. Raises on failure.
+def merge(files, merged_path, csv_path, xml_path=None, binary="dvrescue", quiet=False,
+          on_progress=None):
+    """Run the merge. ``merged_path`` and ``csv_path`` (and ``xml_path`` if given) must not pre-exist.
+    Raises on failure.
+
+    With ``xml_path`` set we also ask for the ``-x`` XML in the same pass — it carries the per-input,
+    per-DIF-sequence error-concealment status (STA) the CSV omits, for free (one dvrescue run).
 
     dvrescue streams one line per processed frame to stdout (``--csv``); ``on_progress(frames_done)``
     is called as those arrive (throttled) so a caller can show real export progress instead of a
     blind spinner."""
-    for p in (merged_path, csv_path):
-        if os.path.exists(p):
+    for p in (merged_path, csv_path, xml_path):
+        if p and os.path.exists(p):
             raise RuntimeError("refusing to overwrite existing %s (internal: pass a fresh path)" % p)
     argv = [find(binary), *files, "-m", merged_path, "--merge-log", csv_path, "--csv"]
+    if xml_path:
+        argv += ["-x", xml_path]
 
     label = "merging %d capture%s with dvrescue" % (len(files), "" if len(files) == 1 else "s")
     if not quiet:

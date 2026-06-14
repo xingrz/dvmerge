@@ -52,11 +52,12 @@ def _segment(seg):
             "rdt0": seg["rdt0"], "rdt1": seg["rdt1"], "break_before": seg["break_before"]}
 
 
-def _source(src, src_pf, tag, damage, coverage):
+def _source(src, src_pf, tag, damage, coverage, profile):
     """Per-capture: its coverage span (or ``aligned: False``), ``damage`` — the tape-TC runs where
-    this capture is itself damaged — and ``coverage``, the contiguous runs it actually holds (split
-    at internal gaps, each with a tape-TC span for labels and a physical ``pf`` span for layout), so
-    a consumer can draw the real held regions and drops on its lane."""
+    this capture is itself damaged — ``coverage``, the contiguous runs it actually holds (split at
+    internal gaps, each with a tape-TC span for labels and a physical ``pf`` span for layout), and
+    ``errorProfile`` — the STA concealment profile from dvrescue's XML (how heavily/by which method
+    this pass is concealed, and whether the damage favours one azimuth head)."""
     base = {"tag": tag, "aligned": src is not None,
             "damage": damage or [], "coverage": coverage or []}
     if src is not None:
@@ -64,6 +65,8 @@ def _source(src, src_pf, tag, damage, coverage):
         base.update({"tc0": tc0, "tc1": tc1, "rdt0": rdt0, "rdt1": rdt1})
         if src_pf is not None:
             base.update({"pf0": src_pf[0], "pf1": src_pf[1]})
+    if profile is not None:
+        base["errorProfile"] = profile
     return base
 
 
@@ -78,6 +81,7 @@ def analysis(plan):
     sd = getattr(plan, "source_damage", None) or []
     sc = getattr(plan, "source_coverage", None) or []
     spf = getattr(plan, "source_pf", None) or []
+    sp = getattr(plan, "source_profiles", None) or []
     return {
         "schema": SCHEMA,
         "version": __version__,
@@ -107,6 +111,7 @@ def analysis(plan):
         "sources": [_source(plan.sources[i] if i < len(plan.sources) else None,
                             spf[i] if i < len(spf) else None, tags[i],
                             sd[i] if i < len(sd) else [],
-                            sc[i] if i < len(sc) else [])
+                            sc[i] if i < len(sc) else [],
+                            sp[i] if i < len(sp) else None)
                     for i in range(len(plan.files))],
     }

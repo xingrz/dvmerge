@@ -104,7 +104,8 @@ class Span:
 class Plan:
     __slots__ = ("fps", "files", "rdt0", "rdt1", "tc0", "tc1", "total_frames",
                  "clean", "dmg", "miss", "spans", "lost_frames", "sources", "source_damage",
-                 "source_coverage", "segments", "seams", "source_pf", "anchors", "multi_session")
+                 "source_coverage", "segments", "seams", "source_pf", "anchors", "multi_session",
+                 "source_profiles")
 
     def __init__(self):
         self.spans = []
@@ -116,6 +117,7 @@ class Plan:
         self.anchors = []   # sampled (pf -> tc, rdt) curve for ruler labels (see _anchors)
         self.source_pf = []  # per input index: (pf0, pf1) physical coverage span, or None
         self.multi_session = False
+        self.source_profiles = []  # per input index: STA error profile from the -x XML, or None
 
 
 def source_damage(info, nfiles, fps, bridge_s=0.5):
