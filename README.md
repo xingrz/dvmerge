@@ -32,13 +32,14 @@ pick the best copy of each frame. dvmerge reads the result:
 ```
    overlapping captures (.dv, read-only)
         │
-      merge    one `dvrescue … -m merged.dv --merge-log log.csv --csv` run:
+      merge    one `dvrescue … -m merged.dv --merge-log log.csv --csv -x log.xml` run:
         │      aligns every capture by tape position, picks each frame's cleanest copy,
-        │      writes the merged DV + a per-frame log. (Cached by input fingerprint.)
+        │      writes the merged DV + a per-frame log + per-input error XML. (Cached.)
         ▼
       report   parse the log: every frame is clean / mosaic (present but still damaged) /
         │      missing (no capture has it). Coalesce the imperfect ones into re-capture spans,
-        │      each tagged with tape TC, recording time, and how many captures cover it.
+        │      each tagged with tape TC, recording time, and how many captures cover it; and
+        │      mine the XML for each pass's concealment profile.
         └─►  with -o   keep merged.dv and write merged.dv.report.md beside it
 ```
 
@@ -91,6 +92,10 @@ unreadable spots → add `-o` to keep the merged file.
   *mosaic* (present but damaged — you have dirty copies to improve on) and *missing* (no capture has
   it — content is absent until re-captured), each with tape TC, recording time, duration, severity,
   and which captures cover it.
+- A per-capture **error profile**, mined from dvrescue's `-x` XML in the same merge pass: how much of
+  each pass is concealed (the true rate over the whole capture), how heavily, the full distribution
+  of concealment methods, the azimuth-head split, and how much of the audio is concealed — so you can
+  tell a head-mismatch transfer from a clean-but-dropping one at a glance.
 - The merge, the merged DV, and its metadata are all dvrescue's — dvmerge never re-encodes.
 
 ## Limitations

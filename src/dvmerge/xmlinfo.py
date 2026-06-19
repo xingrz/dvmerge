@@ -1,13 +1,17 @@
 """Parse a dvrescue ``-x`` XML into a per-input error profile.
 
 The CSV merge log only counts errors per frame; dvrescue's XML carries, per input file (``<media>``)
-and per frame, the DV error-concealment status (STA) — including ``n_even``, how many concealed
-blocks fell on the even DIF sequences (one azimuth head). STA != 0 means a block was unreadable and
-concealed (the visible mosaic); the code says how (10 = filled from the previous frame, 14 =
-unspecified, both with continuity not guaranteed; 7/15 = hard error). We aggregate this into a
-compact per-capture profile — how often a capture is concealed, how heavily, by which method, and
-whether the damage favours one azimuth head — so a consumer can characterise each pass at a glance
-(e.g. "concealed 20%/frame, head-balanced" for a head-mismatch transfer vs a clean-but-dropping one).
+and per frame, the DV error-concealment status (STA) — including ``n_even`` (how many concealed
+blocks fell on the even DIF sequences, i.e. one azimuth head) — and the audio errors (``<aud>``).
+STA != 0 means a block was unreadable and concealed (the visible mosaic); the code says how (10 =
+filled from the previous frame, 14 = unspecified, both with continuity not guaranteed; 7/15 = hard
+error). We mine all of it into a per-capture profile so a consumer can characterise each pass at a
+glance: how often it is concealed, how heavily, by which method (and the full distribution of
+methods), whether the damage favours one azimuth head, and how much of the audio is concealed.
+
+The frame totals come from the ``<frames count=...>`` range elements (every frame), not from the
+``<frame>`` elements dvrescue emits only for interesting frames — so ``concealedFrac`` is the true
+rate over the whole capture, not ~1.0 over just the frames that happened to be logged.
 """
 
 import os
@@ -28,9 +32,17 @@ def _local(tag):
 
 
 def parse_profiles(xml_path, fps=25.0):
-    """``{basename: profile}`` for each ``<media>``. profile keys: ``framesSeen``,
-    ``framesConcealed``, ``concealedFrac`` (0..1), ``avgConcealedPct`` (0..1, over concealed frames),
-    ``evenSharePct`` (0..1 azimuth split of concealed blocks), ``staCode``, ``staMethod``."""
+    """``{basename: profile}`` for each ``<media>``. Profile keys:
+
+      ``framesSeen``         total frames in the capture (from the ``<frames count>`` ranges)
+      ``framesConcealed``    frames carrying any concealed (STA != 0) video block
+      ``concealedFrac``      0..1 — framesConcealed / framesSeen, the TRUE rate over the whole capture
+      ``avgConcealedPct``    0..1 — mean concealed-block share per concealed frame
+      ``evenSharePct``       0..1 — azimuth split: share of concealed blocks on even DIF sequences
+      ``staCode`` / ``staMethod``  the dominant concealment code and its label
+      ``staHistogram``       [{code, method, frac}] — the full distribution of concealment methods
+      ``audioFramesConcealed`` / ``audioConcealedFrac``  the audio side (frames with an <aud> error)
+    """
     out = {}
     if not xml_path or not os.path.exists(xml_path):
         return out
@@ -43,41 +55,54 @@ def parse_profiles(xml_path, fps=25.0):
         if _local(media.tag) != "media":
             continue
         name = os.path.basename(media.attrib.get("ref") or "")
-        frames = concealed_frames = total_err = even_err = 0
+        total = concealed_frames = audio_frames = total_err = even_err = 0
         sum_pct = 0.0
         sta_count = {}
-        for fr in media.iter():
-            if _local(fr.tag) != "frame":
+        for el in media.iter():
+            tag = _local(el.tag)
+            if tag == "frames":                      # a range element: every frame is counted here
+                total += int(el.attrib.get("count", 0) or 0)
                 continue
-            frames += 1
-            ftot = feven = 0
-            # the frame-level <sta> summaries (direct children, carrying n + n_even); the per-dseq
-            # <sta> live under <dseq> and are skipped here so we don't double-count.
-            for c in fr:
-                if _local(c.tag) != "sta":
-                    continue
-                t = int(c.attrib.get("t", 0) or 0)
-                if t == 0:
-                    continue
-                n = int(c.attrib.get("n", 0) or 0)
-                ftot += n
-                feven += int(c.attrib.get("n_even", 0) or 0)
-                sta_count[t] = sta_count.get(t, 0) + n
+            if tag != "frame":
+                continue
+            ftot = feven = faud = 0
+            # frame-level <sta>/<aud> are direct children (carrying n + n_even); per-dseq <sta> live
+            # under <dseq> and are skipped here so we don't double-count.
+            for c in el:
+                ct = _local(c.tag)
+                if ct == "sta":
+                    t = int(c.attrib.get("t", 0) or 0)
+                    if t == 0:
+                        continue
+                    n = int(c.attrib.get("n", 0) or 0)
+                    ftot += n
+                    feven += int(c.attrib.get("n_even", 0) or 0)
+                    sta_count[t] = sta_count.get(t, 0) + n
+                elif ct == "aud":
+                    faud += int(c.attrib.get("n", 0) or 0)
             if ftot > 0:
                 concealed_frames += 1
                 sum_pct += ftot / blocks
                 total_err += ftot
                 even_err += feven
-        if frames == 0:
+            if faud > 0:
+                audio_frames += 1
+        if total == 0:
             continue
         code = max(sta_count, key=lambda c: sta_count[c]) if sta_count else 0
+        st = sum(sta_count.values())
+        histogram = [{"code": t, "method": STA_METHOD.get(t, "error"), "frac": sta_count[t] / st}
+                     for t in sorted(sta_count, key=lambda t: sta_count[t], reverse=True)] if st else []
         out[name] = {
-            "framesSeen": frames,
+            "framesSeen": total,
             "framesConcealed": concealed_frames,
-            "concealedFrac": concealed_frames / frames,
+            "concealedFrac": concealed_frames / total,
             "avgConcealedPct": (sum_pct / concealed_frames) if concealed_frames else 0.0,
             "evenSharePct": (even_err / total_err) if total_err else 0.0,
             "staCode": code,
             "staMethod": STA_METHOD.get(code, "error"),
+            "staHistogram": histogram,
+            "audioFramesConcealed": audio_frames,
+            "audioConcealedFrac": audio_frames / total,
         }
     return out

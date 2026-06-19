@@ -10,11 +10,13 @@ Unlike hdvmerge, dvmerge does **not** implement the merge itself. `dvrescue` (MI
 DV captures by the tape's absolute track number (`abst`), picks each frame's cleanest copy block by
 block, and writes a valid DV stream. dvmerge runs exactly one merge:
 
-    dvrescue IN… -m merged.dv --merge-log log.csv --csv
+    dvrescue IN… -m merged.dv --merge-log log.csv --csv -x log.xml
 
-and treats the **CSV merge log** as the source of truth. Each row is one frame written to the merged
-output, in tape order, with `tc` (tape SMPTE), `rdt` (recording clock), `BlockErrors` (0 = a clean
-copy was found), and `Status` (one char per input: `' '` clean / `'P'` damaged / `'M'` missing).
+and treats the **CSV merge log** as the source of truth for the merged tape. Each row is one frame
+written to the merged output, in tape order, with `tc` (tape SMPTE), `rdt` (recording clock),
+`BlockErrors` (0 = a clean copy was found), and `Status` (one char per input: `' '` clean / `'P'`
+damaged / `'M'` missing). The same run's **`-x` XML** carries the per-input, per-frame detail the CSV
+omits (concealment by STA type + audio errors), which becomes the per-capture error profile.
 
 ## What dvmerge owns (and the rest must not creep into)
 
@@ -27,6 +29,11 @@ copy was found), and `Status` (one char per input: `' '` clean / `'P'` damaged /
   ([plan.py](src/dvmerge/plan.py)): coalesce imperfect frames, bridge short clean gaps, recover
   *missing* frames as gaps in the `tc` sequence (they have no CSV row), and compute per-span
   coverage from `Status`.
+- **Per-capture error profile** ([xmlinfo.py](src/dvmerge/xmlinfo.py)): mine the `-x` XML for each
+  input's concealment — `framesConcealed` / `concealedFrac` (the TRUE rate, from the `<frames count>`
+  totals, not the verbosity-dependent emitted `<frame>` count), `avgConcealedPct`, `evenSharePct`
+  (azimuth split), the dominant `staMethod`, the full `staHistogram`, and the audio side
+  (`audioConcealedFrac`). Attached to the `Plan` as `source_profiles`.
 - **Rendering** ([report.py](src/dvmerge/report.py)) in hdvmerge's report shape, plus a structured
   **JSON dump** ([jsonout.py](src/dvmerge/jsonout.py), `--json`): a faithful serialization of the
   `Plan` (tallies, re-capture spans with coverage, per-capture spans) that a GUI/tool consumes
