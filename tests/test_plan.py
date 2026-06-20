@@ -138,6 +138,21 @@ class TestPlan(unittest.TestCase):
         self.assertEqual(p.total_frames, 20)
         self.assertEqual(p.spans, [])
 
+    def test_dvrescue_csv_diagnostic_line_is_ignored(self):
+        # dvrescue may emit "File read issue." into --merge-log CSV for an input with a partial tail
+        # frame. It is a diagnostic line, not a frame row.
+        path = write_csv([
+            row(0, "00:00:00:00", "2010-01-01 08:00:00", " ", 0),
+            "File read issue.",
+            row(1, "00:00:00:01", "2010-01-01 08:00:00", " ", 0),
+        ])
+        try:
+            frames, n = parse.parse(path, 25, nfiles=1)
+        finally:
+            os.remove(path)
+        self.assertEqual([f.fp for f in frames], [0, 1])
+        self.assertEqual(n, 1)
+
     def test_bridge_merges_nearby_damage(self):
         rows = []
         for i in range(60):

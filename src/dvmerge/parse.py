@@ -84,6 +84,12 @@ def parse(csv_path, fps, nfiles=None):
             st = r.get("Status") or ""
             if not fp and not tc:
                 continue   # a blank line, not a frame
+            if fp and not fp.isdigit():
+                # dvrescue may write plain diagnostics such as "File read issue." into
+                # --merge-log CSV for a readable file with a partial tail frame.
+                if not tc and not st:
+                    continue
+                raise ValueError("invalid FramePos in dvrescue merge log: %r" % fp)
             seen_n = max(seen_n, len(st))
             # A written row is present in >= 1 capture even when dvrescue left tc/abst blank; keep it
             # (dropping it would make its physical span read as missing). cover counts non-'M' chars.
