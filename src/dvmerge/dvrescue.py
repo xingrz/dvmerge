@@ -54,7 +54,13 @@ def merge(files, merged_path, csv_path, xml_path=None, binary="dvrescue", quiet=
         sys.stderr.write("  %s …\n" % label)
         sys.stderr.flush()
     t0 = time.monotonic()
-    proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL,
+    # Force a UTF-8 locale for dvrescue. It decodes its argv (the input paths) using the locale's
+    # charset; under a non-UTF-8 locale (a bare `LANG=C` NAS, common on Synology) a non-ASCII filename
+    # is mangled and dvrescue, unable to open it, falls back to capturing from device 0 ("device not
+    # found: 0"). Python may itself be in UTF-8 mode there (so reading the files / emitting JSON works),
+    # which is exactly why HDV verify succeeds while DV fails — the difference is this subprocess.
+    env = {**os.environ, "LC_ALL": "C.UTF-8", "LANG": "C.UTF-8"}
+    proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, env=env,
                             stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     # drain stderr in a thread so a chatty error stream can't deadlock the stdout read below
     err_box = []
@@ -89,3 +95,4 @@ def merge(files, merged_path, csv_path, xml_path=None, binary="dvrescue", quiet=
                            % (proc.returncode, ": " + err.strip() if err.strip() else ""))
     if not os.path.exists(csv_path):
         raise RuntimeError("dvrescue produced no merge log%s" % (": " + err.strip() if err.strip() else ""))
+    return count    # frames written, for callers that drive a progress bar across several merges

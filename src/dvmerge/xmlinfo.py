@@ -51,6 +51,11 @@ def parse_profiles(xml_path, fps=25.0):
         root = ET.parse(xml_path).getroot()
     except ET.ParseError:
         return out
+    # Accumulate per capture name. The same capture can appear as several <media> blocks — when a
+    # session-aware merge sliced a seam-spanning file, its head and body halves are merged separately
+    # and land here under one rewritten ref — so we SUM their raw tallies and finalise once at the end,
+    # recovering the whole-capture profile. (A normal merge has one <media> per name; summing is a no-op.)
+    acc = {}
     for media in root.iter():
         if _local(media.tag) != "media":
             continue
@@ -89,20 +94,37 @@ def parse_profiles(xml_path, fps=25.0):
                 audio_frames += 1
         if total == 0:
             continue
+        a = acc.get(name)
+        if a is None:
+            acc[name] = {"total": total, "concealed": concealed_frames, "audio": audio_frames,
+                         "total_err": total_err, "even_err": even_err, "sum_pct": sum_pct,
+                         "sta": dict(sta_count)}
+        else:
+            a["total"] += total
+            a["concealed"] += concealed_frames
+            a["audio"] += audio_frames
+            a["total_err"] += total_err
+            a["even_err"] += even_err
+            a["sum_pct"] += sum_pct
+            for t, c in sta_count.items():
+                a["sta"][t] = a["sta"].get(t, 0) + c
+
+    for name, a in acc.items():
+        sta_count = a["sta"]
         code = max(sta_count, key=lambda c: sta_count[c]) if sta_count else 0
         st = sum(sta_count.values())
         histogram = [{"code": t, "method": STA_METHOD.get(t, "error"), "frac": sta_count[t] / st}
                      for t in sorted(sta_count, key=lambda t: sta_count[t], reverse=True)] if st else []
         out[name] = {
-            "framesSeen": total,
-            "framesConcealed": concealed_frames,
-            "concealedFrac": concealed_frames / total,
-            "avgConcealedPct": (sum_pct / concealed_frames) if concealed_frames else 0.0,
-            "evenSharePct": (even_err / total_err) if total_err else 0.0,
+            "framesSeen": a["total"],
+            "framesConcealed": a["concealed"],
+            "concealedFrac": a["concealed"] / a["total"],
+            "avgConcealedPct": (a["sum_pct"] / a["concealed"]) if a["concealed"] else 0.0,
+            "evenSharePct": (a["even_err"] / a["total_err"]) if a["total_err"] else 0.0,
             "staCode": code,
             "staMethod": STA_METHOD.get(code, "error"),
             "staHistogram": histogram,
-            "audioFramesConcealed": audio_frames,
-            "audioConcealedFrac": audio_frames / total,
+            "audioFramesConcealed": a["audio"],
+            "audioConcealedFrac": a["audio"] / a["total"],
         }
     return out

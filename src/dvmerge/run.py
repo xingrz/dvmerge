@@ -12,13 +12,24 @@ import shutil
 import tempfile
 
 from . import DEFAULT_FPS
-from . import dvrescue, parse, xmlinfo
+from . import dvrescue, parse, session, xmlinfo
 from . import plan as planmod
 
 
+# Bump whenever a change alters what a cached merge log *means* — so stale entries written by older
+# logic stop being served (a new version yields a different signature → cache miss → fresh merge),
+# instead of relying on anyone deleting cache files by hand. Past bumps:
+#   1  original (input fingerprint only)
+#   2  session-aware merge: the log for a duplicated multi-session tape is now the corrected, stitched
+#      single-tape log, not dvrescue's doubled output
+CACHE_VERSION = "2"
+
+
 def signature(files):
-    """Content fingerprint of the input set (name, size, mtime). Keys the merge-log cache."""
+    """Cache key for the merge log: the merge-logic version plus the input set's fingerprint (name,
+    size, mtime). Folding the version in means a logic change naturally invalidates old entries."""
     h = hashlib.sha1()
+    h.update(("dvmerge-cache/%s\n" % CACHE_VERSION).encode())
     for f in files:
         st = os.stat(f)
         h.update(("%s|%d|%d\n" % (os.path.basename(f), st.st_size, st.st_mtime_ns)).encode())
@@ -75,6 +86,25 @@ def merge_log(files, output=None, *, no_cache=False, cache_dir=None, tmp_dir=Non
     except Exception:
         cleanup()
         raise
+
+    # dvrescue lays the body down twice when a tape's recording sessions collide on tape position (a
+    # short head scene and the long body both restarting tc at 00:00:00). Detect that artifact in the
+    # naive merge log; if present, re-merge each recording session on its own and stitch them into one
+    # tape — overwriting tmp_csv/tmp_xml with the corrected logs and tmp_dv with the corrected stream
+    # (see dvmerge.session). Only this pathological case pays the extra cost; any other tape — single
+    # session, or a multi-session tape dvrescue already folded cleanly — falls straight through.
+    try:
+        _frames, _ = parse.parse(tmp_csv, DEFAULT_FPS, nfiles=len(files))
+        dup = session.detect_duplication(_frames) if _frames else None
+    except (ValueError, OSError):
+        dup = None
+    if dup and os.path.exists(tmp_xml):
+        sessions = session.partition(files, tmp_xml, DEFAULT_FPS)
+        if len(sessions) >= 2:
+            _rm(tmp_dv)   # discard the doubled output; rebuild it correctly from the sessions
+            session.remerge(files, sessions, combined_csv=tmp_csv, combined_xml=tmp_xml,
+                            output=(tmp_dv if output else None), work_dir=home, fps=DEFAULT_FPS,
+                            dvrescue_bin=dvrescue_bin, on_progress=on_progress)
 
     if cache_csv:
         os.makedirs(cdir, exist_ok=True)
